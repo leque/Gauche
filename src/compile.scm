@@ -1418,9 +1418,14 @@
 ;;   variable references (defined by define-constant) are converted to
 ;;   its values at this stage.
 
+(define (add-call-type! x typ)
+  (when (extended-pair? x)
+    (pair-attribute-set! x 'call-type typ)))
+
 ;; Common entry to handle procedure call
 ;; proc is IForm.  args is [Sexpr].
 (define-inline (pass1/call program proc args cenv)
+  (add-call-type! program 'procedure)
   (cond
    [(has-tag? proc $LAMBDA)        ; immediate lambda
     (expand-inlined-procedure program proc (imap (cut pass1 <> cenv) args))]
@@ -1443,6 +1448,7 @@
       (and (pair? head)
            (module-qualified-variable? head cenv)
            (let1 mod (ensure-module (cadr head) 'with-module #f)
+             (add-call-type! head 'macro)
              (cenv-lookup (cenv-swap-module cenv mod)
                           (caddr head) SYNTAX)))))
 
@@ -1462,10 +1468,13 @@
       (if gval
         (case type
           [(macro)
+           (add-call-type! program 'macro)
            (pass1 (call-macro-expander gval program (cenv-frames cenv)) cenv)]
           [(syntax)
+           (add-call-type! program 'macro)
            (call-syntax-handler gval program cenv)]
           [(inline)
+           (add-call-type! program 'procedure)
            (pass1/expand-inliner id gval)]
           )
         (pass1/call program ($gref id) (cdr program) cenv))))
@@ -1514,8 +1523,10 @@
               [(identifier? h) (pass1/global-call h)]
               [(lvar? h) (pass1/call program ($lref h) (cdr program) cenv)]
               [(macro? h) ;; local macro
+               (add-call-type! program 'macro)
                (pass1 (call-macro-expander h program (cenv-frames cenv)) cenv)]
               [(syntax? h);; locally rebound syntax
+               (add-call-type! program 'macro)
                (call-syntax-handler h program cenv)]
               [else (error "[internal] unknown resolution of head:" h)]))]
      [else (pass1/call program (pass1 (car program) (cenv-sans-name cenv))
@@ -1587,6 +1598,7 @@
             [(syntax? head) ; when (let-syntax ((xif if)) (xif ...)) etc.
              (pass1/body-finish intdefs exprs cenv)]
             [(global-eq? head 'define cenv)
+             (add-call-type! (caar exprs) 'macro)
              (let1 def (match args
                          [((name . formals) . body)
                           `(,name (,lambda. ,formals ,@body) . ,src)]
@@ -1594,6 +1606,7 @@
                          [_ (error "malformed internal define:" (caar exprs))])
                (pass1/body-rec rest (cons def intdefs) cenv))]
             [(global-eq? head 'define-syntax cenv) ; internal syntax definition
+             (add-call-type! (caar exprs) 'macro)
              (match args
                [(name trans-spec)
                 (let* ([trans (pass1/eval-macro-rhs
@@ -1604,12 +1617,15 @@
                [_ (error "syntax-error: malformed internal define-syntax:"
                          `(,op ,@args))])]
             [(global-eq? head 'begin cenv) ;intersperse forms
+             (add-call-type! (caar exprs) 'macro)
              (pass1/body-rec (append (imap (cut cons <> src) args) rest)
                              intdefs cenv)]
             [(global-eq? head 'include cenv)
+             (add-call-type! (caar exprs) 'macro)
              (let1 sexpr&srcs (pass1/expand-include args cenv #f)
                (pass1/body-rec (append sexpr&srcs rest) intdefs cenv))]
             [(global-eq? head 'include-ci cenv)
+             (add-call-type! (caar exprs) 'macro)
              (let1 sexpr&srcs (pass1/expand-include args cenv #t)
                (pass1/body-rec (append sexpr&srcs rest) intdefs cenv))]
             [(identifier? head)
@@ -1623,6 +1639,7 @@
     [_ (pass1/body-finish intdefs exprs cenv)]))
 
 (define (pass1/body-macro-expand-rec mac exprs intdefs cenv)
+  (add-call-type! (caar exprs) 'macro)
   (pass1/body-rec
    (acons (call-macro-expander mac (caar exprs) (cenv-frames cenv))
           (cdar exprs) ;src
